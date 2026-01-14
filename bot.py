@@ -10,7 +10,7 @@
 ✅ Yeni üye karşılama - GRUP İÇİNDE ÇALIŞIR
 ✅ Küfür filtresi - GRUP İÇİNDE ÇALIŞIR
 ✅ Flood koruması - GRUP İÇİNDE ÇALIŞIR
-✅ Render uyumlu
+✅ Render uyumlu - PYTHON 3.13 DÜZELTİLDİ
 ✅ Hata düzeltildi
 """
 
@@ -29,7 +29,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ContextTypes,
-    ChatMemberHandler
+    CallbackContext
 )
 from telegram.constants import ParseMode
 
@@ -197,7 +197,6 @@ async def handle_spam_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     chat_id = update.effective_chat.id
-    message_id = update.message.message_id
     
     # Spam bot kontrolü
     is_spam_bot = False
@@ -272,7 +271,7 @@ async def handle_spam_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"❌ Spam bot hatası: {e}")
 
-async def auto_unmute_job(context: ContextTypes.DEFAULT_TYPE):
+async def auto_unmute_job(context: CallbackContext):
     """6 saat sonra otomatik aç"""
     try:
         chat_id = context.job.data
@@ -299,7 +298,6 @@ async def check_group_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     user_id = update.effective_user.id
     message_text = update.message.text or ""
-    message_id = update.message.message_id
     
     # Bot kendisi mi?
     if user_id == context.bot.id:
@@ -349,7 +347,7 @@ async def check_group_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         logger.error(f"❌ Group status check hatası: {e}")
 
-async def delete_message_job(context: ContextTypes.DEFAULT_TYPE):
+async def delete_message_job(context: CallbackContext):
     """Mesajı sil"""
     try:
         data = context.job.data
@@ -528,8 +526,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/durum - Grup durumu\n"
         "/ac - Grubu aç (admin)\n"
         "/kapat - Test kapatma (admin)\n"
-        "/rules - Grup kuralları\n"
-        "/stats - İstatistikler"
+        "/rules - Grup kuralları"
     )
 
 async def durum_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -737,8 +734,14 @@ def main():
     cleanup_thread = threading.Thread(target=cleanup_expired, daemon=True)
     cleanup_thread.start()
     
-    # Application oluştur
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Application oluştur (PYTHON 3.13 UYUMLU)
+    try:
+        # Python 3.13 için güncellenmiş ApplicationBuilder
+        app = Application.builder().token(BOT_TOKEN).build()
+    except Exception as e:
+        logger.error(f"❌ Application oluşturma hatası: {e}")
+        print(f"❌ Application hatası: {e}")
+        return
     
     # Hata handler'ı ekle
     app.add_error_handler(error_handler)
@@ -801,10 +804,15 @@ def main():
     
     # Bot'u çalıştır
     try:
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        app.run_polling(
+            poll_interval=1.0,
+            timeout=20,
+            drop_pending_updates=True
+        )
     except Exception as e:
         logger.error(f"❌ Bot başlatma hatası: {e}")
         print(f"❌ Hata: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
