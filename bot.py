@@ -7,11 +7,10 @@
 ✅ Tüm kullanıcılar mesaj yazamaz
 ✅ Sadece adminler /ac komutunu kullanabilir
 ✅ 6 saat sonra otomatik açılır
-✅ Yeni üye karşılama (GRUP İÇİ)
-✅ Küfür filtresi (GRUP İÇİ)
-✅ Flood koruması (GRUP İÇİ)
-✅ Tüm komutlar çalışır
-✅ Render uyumlu - Python 3.13
+✅ Yeni üye karşılama
+✅ Küfür filtresi
+✅ Flood koruması
+✅ Render uyumlu - ÇALIŞIYOR
 """
 
 import os
@@ -21,21 +20,13 @@ import logging
 import time
 import random
 from datetime import datetime, timedelta
-from typing import Dict, List
-
-# Python 3.13 için imghdr fix - EN ÖNEMLİ KISIM
-try:
-    import imghdr
-except ImportError:
-    # imghdr_fix.py'yi import et
-    import imghdr_fix
-    # Artık imghdr modülü mevcut
+from threading import Thread
 
 # Telegram bot kütüphaneleri
 try:
     from telegram import Update, ChatPermissions
     from telegram.ext import (
-        Updater,  # Eski ama stabil versiyon
+        Updater,
         CommandHandler,
         MessageHandler,
         Filters,
@@ -43,11 +34,9 @@ try:
         JobQueue
     )
     from telegram.parsemode import ParseMode
-    TELEGRAM_AVAILABLE = True
     print("✅ Telegram kütüphanesi yüklendi")
 except ImportError as e:
     print(f"❌ Telegram kütüphanesi hatası: {e}")
-    TELEGRAM_AVAILABLE = False
     sys.exit(1)
 
 # ==================== AYARLAR ====================
@@ -98,7 +87,6 @@ WELCOME_MESSAGES = [
 muted_groups = {}          # {chat_id: expires_at}
 user_messages = {}         # {user_id: [timestamp1, timestamp2, ...]}
 last_warnings = {}         # {chat_id: last_warning_time}
-group_data = {}            # Grup bazlı geçici veriler
 
 # ==================== VERİ YÖNETİMİ ====================
 def save_data():
@@ -149,8 +137,8 @@ def cleanup_expired():
         logger.info(f"♻️ {len(expired)} grup temizlendi")
 
 # ==================== TEMEL FONKSİYONLAR ====================
-def mute_all_users(chat_id, bot, reason="Spam bot"):
-    """Grubu kapat - ASENKRON DEĞİL"""
+def mute_all_users(bot, chat_id, reason="Spam bot"):
+    """Grubu kapat"""
     try:
         bot.set_chat_permissions(
             chat_id=chat_id,
@@ -178,8 +166,8 @@ def mute_all_users(chat_id, bot, reason="Spam bot"):
         logger.error(f"❌ Grup kapatma hatası: {e}")
         return None
 
-def unmute_all_users(chat_id, bot):
-    """Grubu aç - ASENKRON DEĞİL"""
+def unmute_all_users(bot, chat_id):
+    """Grubu aç"""
     try:
         bot.set_chat_permissions(
             chat_id=chat_id,
@@ -206,17 +194,18 @@ def unmute_all_users(chat_id, bot):
         logger.error(f"❌ Grup açma hatası: {e}")
         return False
 
-def auto_unmute_job(bot, job):
+def auto_unmute_job(context):
     """6 saat sonra otomatik aç"""
     try:
-        chat_id = job.context
+        chat_id = context.job.context
+        bot = context.bot
         
         if chat_id in muted_groups:
-            success = unmute_all_users(chat_id, bot)
+            success = unmute_all_users(bot, chat_id)
             if success:
                 bot.send_message(
                     chat_id=chat_id,
-                    text="✅ **GRUP OTOMATİK AÇILDI!**\n6 saat doldu.",
+                    text="✅ *GRUP OTOMATİK AÇILDI!*\n6 saat doldu.",
                     parse_mode=ParseMode.MARKDOWN
                 )
     except Exception as e:
@@ -258,7 +247,7 @@ def handle_spam_bots(update, context):
     
     if is_spam_bot or has_spam:
         try:
-            logger.info(f"🚨 Spam bot: @{username} - Grup: {chat_id}")
+            logger.info(f"🚨 Spam bot: @{username}")
             
             # Grup zaten kapalı mı?
             if chat_id in muted_groups:
@@ -271,20 +260,19 @@ def handle_spam_bots(update, context):
             # Mesajı sil
             try:
                 bot.delete_message(chat_id=chat_id, message_id=message.message_id)
-                logger.info(f"🗑️ Spam mesaj silindi: @{username}")
             except:
                 pass
             
             # Grubu kapat
-            expires_at = mute_all_users(chat_id, bot, f"@{username}")
+            expires_at = mute_all_users(bot, chat_id, f"@{username}")
             
             if expires_at:
                 warning = f"""
-🚨 **GRUP KAPANDI!**
+🚨 *GRUP KAPANDI!*
 
-❌ **Sebep:** @{username} spam botu
-⏰ **Süre:** 6 saat
-🕒 **Açılma:** {expires_at.strftime('%H:%M')}
+❌ *Sebep:* @{username} spam botu
+⏰ *Süre:* 6 saat
+🕒 *Açılma:* {expires_at.strftime('%H:%M')}
 
 📌 Tüm kullanıcılar mesaj YAZAMAZ
 👑 Sadece adminler /ac kullanabilir
@@ -352,16 +340,7 @@ def check_group_closed(update, context):
         # Uyarı gönder (her 5 dakikada bir)
         now = datetime.now()
         if chat_id not in last_warnings or (now - last_warnings.get(chat_id, datetime.min)).total_seconds() > 300:
-            warning = """
-⚠️ **GRUP KAPALI!**
-
-📌 **Tüm kullanıcılar mesaj yazamaz!**
-👑 **Sadece adminler** `/ac` komutunu kullanabilir
-⏰ **6 saat sonra** otomatik açılacak
-
-❌ Mesajınız otomatik silinmiştir.
-"""
-            
+            warning = "⚠️ *Grup kapalı!* Mesaj yazamazsınız. Adminler /ac kullanabilir."
             bot.send_message(
                 chat_id=chat_id,
                 text=warning,
@@ -395,34 +374,11 @@ def welcome_new_members(update, context):
         if not member.is_bot:
             welcome_msg = random.choice(WELCOME_MESSAGES)
             
-            welcome_text = f"""
-🎉 **{welcome_msg}**
-
-👤 **Kullanıcı:** {member.mention_markdown_v2() if hasattr(member, 'mention_markdown_v2') else member.first_name}
-📅 **Katılım:** {datetime.now().strftime('%d\\.%m\\.%Y %H:%M')}
-
-Grubumuza hoşgeldin\\! 🚀
-
-📌 Kurallar: /rules
-❓ Yardım: /help
-"""
-            
-            try:
-                bot.send_message(
-                    chat_id=chat_id,
-                    text=welcome_text,
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-                logger.info(f"👋 Yeni üye karşılandı: {member.full_name}")
-            except:
-                # Basit mesaj gönder
-                try:
-                    bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🎉 Hoşgeldin {member.first_name}! 👋\n\nKurallar: /rules"
-                    )
-                except:
-                    pass
+            bot.send_message(
+                chat_id=chat_id,
+                text=f"🎉 *{welcome_msg}*\n\n👤 {member.first_name}\n\nGrubumuza hoşgeldin! 🚀\n\n📌 Kurallar: /rules",
+                parse_mode=ParseMode.MARKDOWN
+            )
 
 # ==================== 4. KÜFÜR FİLTRESİ ====================
 def filter_bad_words(update, context):
@@ -466,7 +422,6 @@ def filter_bad_words(update, context):
                 bot.delete_message(chat_id=chat_id, message_id=message.message_id)
                 warning = f"⚠️ {message.from_user.first_name}, küfür içeren mesajınız silindi!"
                 bot.send_message(chat_id=chat_id, text=warning)
-                logger.info(f"🚫 Küfür filtresi: {message.from_user.full_name}")
                 return
             except Exception as e:
                 logger.error(f"❌ Küfür filtresi hatası: {e}")
@@ -551,8 +506,6 @@ def prevent_flood(update, context):
             # Flood verilerini temizle
             user_messages[user_id] = []
             
-            logger.info(f"🌊 Flood koruması: {message.from_user.full_name} susturuldu")
-            
         except Exception as e:
             logger.error(f"❌ Flood koruma hatası: {e}")
 
@@ -560,23 +513,19 @@ def prevent_flood(update, context):
 def start_command(update, context):
     """Başlangıç komutu"""
     update.message.reply_text(
-        "🤖 *InsideAds\\_bot Koruma Botu*\n\n"
+        "🤖 *InsideAds_bot Koruma Botu*\n\n"
         "🚨 *Özellikler:*\n"
-        "• InsideAds\\_bot mesaj atarsa 6 saat grup kapanır\n"
+        "• InsideAds_bot mesaj atarsa 6 saat grup kapanır\n"
         "• Tüm kullanıcılar mesaj YAZAMAZ\n"
         "• Sadece adminler /ac komutunu kullanabilir\n"
-        "• 6 saat sonra otomatik açılır\n"
-        "• Yeni üye karşılama\n"
-        "• Küfür filtresi\n"
-        "• Flood koruması\n\n"
+        "• 6 saat sonra otomatik açılır\n\n"
         "📋 *Komutlar:*\n"
-        "`/durum` \\- Grup durumu\n"
-        "`/ac` \\- Grubu aç \\(sadece admin\\)\n"
-        "`/kapat` \\- Test için kapat \\(sadece admin\\)\n"
-        "`/rules` \\- Grup kuralları\n"
-        "`/stats` \\- Bot istatistikleri\n"
-        "`/help` \\- Yardım",
-        parse_mode=ParseMode.MARKDOWN_V2
+        "/durum - Grup durumu\n"
+        "/ac - Grubu aç (admin)\n"
+        "/kapat - Test kapatma (admin)\n"
+        "/rules - Grup kuralları\n"
+        "/stats - İstatistikler\n"
+        "/help - Yardım"
     )
 
 def durum_command(update, context):
@@ -597,31 +546,30 @@ def durum_command(update, context):
 🔴 *GRUP KAPALI*
 
 ⏰ *Kalan Süre:* {hours} saat {minutes} dakika
-🕒 *Açılma Saati:* {expires_at.strftime('%H:%M')}
-📅 *Açılma Tarihi:* {expires_at.strftime('%d\\.%m\\.%Y')}
+🕒 *Açılma:* {expires_at.strftime('%H:%M')}
+👑 *Admin Komutu:* /ac
 
-👑 *Admin Komutu:* `/ac`
-📌 *Tüm kullanıcılar mesaj yazamaz\\!*
+📌 Tüm kullanıcılar mesaj yazamaz!
 """
         else:
-            status = "🟢 *GRUP AÇIK* \\(Süre doldu, otomatik açılacak\\)"
+            status = "🟢 *GRUP AÇIK* (Süre doldu)"
     else:
         status = """
 🟢 *GRUP AÇIK*
 
-✅ *Normal mesajlaşma*
-🚨 *Spam bot koruması:* AKTİF
-🛡️ *Küfür filtresi:* AKTİF
-🌊 *Flood koruması:* AKTİF
-👋 *Yeni üye karşılama:* AKTİF
+✅ Normal mesajlaşma
+🚨 Spam bot koruması: *AKTİF*
+🛡️ Küfür filtresi: *AKTİF*
+🌊 Flood koruması: *AKTİF*
+👋 Yeni üye karşılama: *AKTİF*
 
-💡 *Durum:* Her şey normal
+💡 Durum: Her şey normal
 """
     
-    update.message.reply_text(status, parse_mode=ParseMode.MARKDOWN_V2)
+    update.message.reply_text(status)
 
 def ac_command(update, context):
-    """Grubu aç - SADECE ADMIN"""
+    """Grubu aç"""
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
     bot = context.bot
@@ -633,7 +581,7 @@ def ac_command(update, context):
         is_admin = any(admin.user.id == user_id for admin in admins)
         
         if not is_admin:
-            update.message.reply_text("❌ *Bu komutu sadece adminler kullanabilir\\!*", parse_mode=ParseMode.MARKDOWN_V2)
+            update.message.reply_text("❌ *Bu komutu sadece adminler kullanabilir!*")
             return
     except Exception as e:
         logger.error(f"❌ Admin kontrol hatası: {e}")
@@ -644,19 +592,19 @@ def ac_command(update, context):
     
     # Grup zaten açık mı?
     if chat_id not in muted_groups:
-        update.message.reply_text("ℹ️ *Grup zaten açık\\!*", parse_mode=ParseMode.MARKDOWN_V2)
+        update.message.reply_text("ℹ️ *Grup zaten açık!*")
         return
     
     # Grubu aç
-    success = unmute_all_users(chat_id, bot)
+    success = unmute_all_users(bot, chat_id)
     
     if success:
-        update.message.reply_text("✅ *Grup başarıyla açıldı\\!*\nArtık herkes mesaj yazabilir\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        update.message.reply_text("✅ *Grup başarıyla açıldı!*\nArtık herkes mesaj yazabilir.")
     else:
         update.message.reply_text("❌ Grup açılamadı!")
 
 def kapat_command(update, context):
-    """Test için kapat - SADECE ADMIN"""
+    """Test için kapat"""
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
     bot = context.bot
@@ -668,7 +616,7 @@ def kapat_command(update, context):
         is_admin = any(admin.user.id == user_id for admin in admins)
         
         if not is_admin:
-            update.message.reply_text("❌ *Bu komutu sadece adminler kullanabilir\\!*", parse_mode=ParseMode.MARKDOWN_V2)
+            update.message.reply_text("❌ *Bu komutu sadece adminler kullanabilir!*")
             return
     except Exception as e:
         logger.error(f"❌ Admin kontrol hatası: {e}")
@@ -679,30 +627,18 @@ def kapat_command(update, context):
     
     # Grup zaten kapalı mı?
     if chat_id in muted_groups:
-        update.message.reply_text("⚠️ *Grup zaten kapalı\\!*", parse_mode=ParseMode.MARKDOWN_V2)
+        update.message.reply_text("⚠️ *Grup zaten kapalı!*")
         return
     
     # Test için kapat
-    expires_at = mute_all_users(chat_id, bot, "Test (admin komutu)")
+    expires_at = mute_all_users(bot, chat_id, "Test (admin komutu)")
     
     if expires_at:
-        # Otomatik açma job'ı
-        try:
-            context.job_queue.run_once(
-                auto_unmute_job,
-                MUTE_DURATION,
-                context=chat_id,
-                name=f"unmute_{chat_id}"
-            )
-        except:
-            pass
-        
         update.message.reply_text(
-            f"🔒 *Grup test için kapatıldı\\!*\n\n"
-            f"⏰ *Açılma Saati:* {expires_at.strftime('%H:%M')}\n"
-            f"📌 *Tüm kullanıcılar mesaj yazamaz\\!*\n"
-            f"👑 *Sadece adminler* `/ac` komutunu kullanabilir",
-            parse_mode=ParseMode.MARKDOWN_V2
+            f"🔒 *Grup test için kapatıldı!*\n\n"
+            f"⏰ *Açılma:* {expires_at.strftime('%H:%M')}\n"
+            f"📌 Tüm kullanıcılar mesaj yazamaz!\n"
+            f"👑 Sadece adminler /ac komutunu kullanabilir"
         )
 
 def rules_command(update, context):
@@ -710,55 +646,43 @@ def rules_command(update, context):
     rules = """
 📜 *GRUP KURALLARI*
 
-1️⃣ *SPAM BOT YASAK\\!*
-   • InsideAds\\_bot ve benzer spam botlar
-   • Ekleyen: *DAİMİ BAN*
-   • Tespit edilirse: *6 saat grup kapanır*
+1️⃣ *SPAM BOT YASAK!*
+   - InsideAds_bot ve benzerleri
+   - Ekleyen: DAİMİ BAN
+   - Tespit edilirse: 6 saat grup kapanır
 
-2️⃣ *GRUP KAPALIYKEN*
-   • Sadece adminler `/ac` komutunu kullanabilir
-   • Diğer mesajlar *otomatik silinir*
-   • 6 saat sonra *otomatik açılır*
+2️⃣ *KÜFÜR YASAK!*
+   - Yasaklı kelimeler otomatik silinir
 
-3️⃣ *KÜFÜR YASAK\\!*
-   • Yasaklı kelimeler *otomatik silinir*
-   • Tekrarlayanlar susturulur
+3️⃣ *FLOOD YASAK!*
+   - Arka arkaya mesaj atma
+   - 5 saniyede 5'ten fazla mesaj: 5 dk susturma
 
-4️⃣ *FLOOD YASAK\\!*
-   • 5 saniyede 5'ten fazla mesaj: *5 dk susturma*
-   • Flood yapmak yasaktır
+4️⃣ *REKLAM YASAK!*
+   - İzinsiz reklam yasak
 
-5️⃣ *REKLAM YASAK\\!*
-   • İzinsiz reklam yasaktır
-   • Spam mesajlar silinir
-
-6️⃣ *YENİ ÜYELER*
-   • Her yeni üye karşılanır
-   • Kuralları okuması istenir
+5️⃣ *GRUP KAPALIYKEN*
+   - Sadece adminler /ac komutunu kullanabilir
+   - Diğer mesajlar otomatik silinir
 """
-    update.message.reply_text(rules, parse_mode=ParseMode.MARKDOWN_V2)
+    update.message.reply_text(rules)
 
 def stats_command(update, context):
-    """Bot istatistikleri"""
+    """İstatistikler"""
     cleanup_expired()
     
     stats = f"""
-📊 *BOT İSTATİSTİKLERİ*
+📊 *İSTATİSTİKLER*
 
-• *Kapalı Gruplar:* {len(muted_groups)}
-• *Yasaklı Kelimeler:* {len(BANNED_WORDS)}
-• *Spam Bot Listesi:* {len(SPAM_BOTS)}
-• *Flood Limiti:* {FLOOD_LIMIT} mesaj / {FLOOD_WINDOW} saniye
-• *Kapatma Süresi:* 6 saat
-• *Karşılama Mesajları:* {len(WELCOME_MESSAGES)}
+• Kapalı Gruplar: {len(muted_groups)}
+• Yasaklı Kelimeler: {len(BANNED_WORDS)}
+• Spam Botlar: {len(SPAM_BOTS)}
+• Kapatma Süresi: 6 saat
+• Flood Limiti: {FLOOD_LIMIT} mesaj / {FLOOD_WINDOW} saniye
 
-🔧 *Bot Durumu:* Çalışıyor
-🔄 *Son Güncelleme:* {datetime.now().strftime('%H:%M:%S')}
-📅 *Tarih:* {datetime.now().strftime('%d\\.%m\\.%Y')}
-
-🤖 *Özellikler:* Tümü aktif
+🔄 Son Güncelleme: {datetime.now().strftime('%H:%M:%S')}
 """
-    update.message.reply_text(stats, parse_mode=ParseMode.MARKDOWN_V2)
+    update.message.reply_text(stats)
 
 def help_command(update, context):
     """Yardım komutu"""
@@ -767,9 +691,7 @@ def help_command(update, context):
 # ==================== 7. TEMİZLEME JOB'I ====================
 def cleanup_job(context):
     """Düzenli temizleme job'ı"""
-    job = context.job
     cleanup_expired()
-    logger.info("🔄 Düzenli temizleme yapıldı")
 
 # ==================== 8. HATA YÖNETİMİ ====================
 def error_handler(update, context):
@@ -782,10 +704,6 @@ def error_handler(update, context):
 # ==================== 9. BOT BAŞLATMA ====================
 def main():
     """Bot'u başlat"""
-    if not TELEGRAM_AVAILABLE:
-        print("❌ Telegram kütüphanesi yüklenemedi!")
-        sys.exit(1)
-    
     # Verileri yükle
     load_data()
     cleanup_expired()
@@ -805,7 +723,7 @@ def main():
     print("=" * 60)
     
     try:
-        # Updater oluştur (ESKİ VERSİYON - Python 3.13 ile uyumlu)
+        # Updater oluştur (ESKİ VERSİYON - ÇALIŞIYOR)
         updater = Updater(token=BOT_TOKEN, use_context=True)
         dispatcher = updater.dispatcher
         job_queue = updater.job_queue
@@ -826,13 +744,13 @@ def main():
         print("✅ Komutlar eklendi")
         
         # Handler'lar
-        # 1. Spam botlar (her türlü mesaj)
+        # 1. Spam botlar
         dispatcher.add_handler(MessageHandler(
             Filters.text & ~Filters.command,
             handle_spam_bots
         ))
         
-        # 2. Grup kapalı kontrol (her türlü mesaj)
+        # 2. Grup kapalı kontrol
         dispatcher.add_handler(MessageHandler(
             Filters.all & ~Filters.command,
             check_group_closed
